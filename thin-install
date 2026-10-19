@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Thin client installer: Arch Linux + LXQt + PipeWire + VMware/Omnissa Horizon client
+# Target: HP t610 (AMD GPU). Run as root on a fresh Arch install.
+#
+# Usage:
+#   ./install-thinclient.sh install        # packages, Horizon client, thinuser, themes
+#   ./install-thinclient.sh cleanup        # remove build tools (run after testing the client)
+#   ./install-thinclient.sh autologin      # enable autologin + autostart Horizon
+#   ./install-thinclient.sh autologin-off  # undo autologin + autostart
+
+set -euo pipefail
+
+# ---------- Settings: edit these ----------
+THIN_USER="thinuser"
+BUILD_USER="builder"
+AUR_PKG="vmware-horizon-client"          # if the clone fails, the AUR package was renamed (Omnissa)
+SERVER_URL="vdi.yourcompany.com"
+PKG_SAVE_DIR="/root/packages"
+# ------------------------------------------
+
+log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
+die()  { printf '\n\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
+need_root() { [[ $EUID -eq 0 ]] || die "Run this script as root."; }
+
+detect_client() {
+  for c in vmware-view horizon-client; do
+    command -v "$c" >/dev/null 2>&1 && { echo "$c"; return; }
+  done
+  die "Horizon client command not found. Is the package installed?"
+}
+
+install_packages() {
+  log "Installing system packages"
+  pacman -Syu --noconfirm
+  # NOTE: the lxqt group installs all members with --noconfirm
+  pacman -S --needed --noconfirm \
+    xorg-server mesa xf86-video-amdgpu \
+    lxqt openbox sddm \
+    networkmanager network-manager-applet \
+    pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils pavucontrol-qt \
+    kvantum papirus-icon-theme \
+    base-devel git
+
+  systemctl enable NetworkManager sddm
+  systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
+}
+
+build_client() {
+  log "Building $AUR_PKG as unprivileged user '$BUILD_USER'"
+  id "$BUILD_USER" >/dev/null 2>&1 || useradd -m "$BUILD_USER"
+
+  local dir="/home/$BUILD_USER/$AUR_PKG"
+  rm -rf "$dir"
+  su - "$BUILD_USER" -c "git clone https://aur.archlinux.org/$AUR_PKG.git" \
+    || die "git clone failed. Search the AUR for 'horizon client' and set AUR_PKG."
+
+  log "Source URLs in the PKGBUILD (should be vmware.com or omnissa.com):"
+  grep -E '^\s*(source|_url|url)' "$dir/PKGBUILD" || true
+  read -r -p "Do the URLs look right? [y/N] " ok
+  [[ "$ok" =~ ^[Yy]$ ]] || die "Aborted by user."
+
+  log "Installing known build dependencies"
+  pacman -S --needed --noconfirm resvg oxipng
+
+  log "Installing any other dependencies listed in the PKGBUILD"
+  local deps
+  deps=$(su - "$BUILD_USER" -c "cd $AUR_PKG && makepkg --printsrcinfo" \
+         | awk '/^[[:space:]]*(make)?depends = /{print $3}' \
+         | sed 's/[<>=].*//' | sort -u)
+  # shellcheck disable=SC2086
+  pacman -S --needed --noconfirm --asdeps $deps \
+    || die "Some dependencies are not in the official repos. Install them manually, then re-run."
+
+  log "Compiling"
+  su - "$BUILD_USER" -c "cd $AUR_PKG && makepkg --noconfirm"
+
+  log "Saving and installing the package"
+  mkdir -p "$PKG_SAVE_DIR"
+  cp "$dir"/*.pkg.tar.zst "$PKG_SAVE_DIR"/
+  pacman -U --noconfirm "$dir"/*.pkg.tar.zst
+}
+
+configure_system() {
+  log "Windows-like defaults for new users"
+  mkdir -p /etc/skel/.config/lxqt
+  cat > /etc/skel/.config/lxqt/lxqt.conf <<'EOF'
+[General]
+icon_theme=Papirus
+
+[Qt]
+style=kvantum
+EOF
+
+  log "Creating user '$THIN_USER' (no sudo)"
+  if ! id "$THIN_USER" >/dev/null 2>&1; then
+    useradd -m -s /bin/bash "$THIN_USER"
+    echo "Set the password for $THIN_USER:"
+    passwd "$THIN_USER"
+  fi
+}
+
+do_install() {
+  install_packages
+  build_client
+  configure_system
+  local client; client=$(detect_client)
+  log "Install finished."
+  cat <<EOF
+
+Next steps:
+  1. reboot
+  2. Log in as $THIN_USER, session "LXQt Desktop"
+  3. Test in a terminal:   $client --serverURL=$SERVER_URL --fullscreen
+  4. Test sound:           wpctl status
+  5. When all works:       ./install-thinclient.sh cleanup
+  6. Optional:             ./install-thinclient.sh autologin
+EOF
+}
+
+do_cleanup() {
+  log "Removing build user and build tools"
+  pacman -Qi "$AUR_PKG" >/dev/null 2>&1 || die "$AUR_PKG is not installed. Not cleaning up."
+
+  userdel -r "$BUILD_USER" 2>/dev/null || true
+
+  # Remove one by one: pacman refuses packages still required by others, which is what we want
+  for p in git $(pacman -Sgq base-devel) resvg oxipng; do
+    pacman -Qi "$p" >/dev/null 2>&1 && pacman -Rns --noconfirm "$p" 2>/dev/null || true
+  done
+
+  log "Removing orphans"
+  local orphans
+  while orphans=$(pacman -Qdtq) && [[ -n "$orphans" ]]; do
+    # shellcheck disable=SC2086
+    pacman -Rns --noconfirm $orphans || break
+  done
+
+  pacman -Scc --noconfirm
+  detect_client >/dev/null
+  log "Cleanup done. Package copy kept in $PKG_SAVE_DIR"
+  echo "To rebuild later: pacman -S --needed base-devel git, then re-run 'install'."
+}
+
+do_autologin() {
+  local client; client=$(detect_client)
+  log "Enabling autologin for $THIN_USER and autostart of $client"
+  mkdir -p /etc/sddm.conf.d
+  cat > /etc/sddm.conf.d/autologin.conf <<EOF
+[Autologin]
+User=$THIN_USER
+Session=lxqt.desktop
+EOF
+  cat > /etc/xdg/autostart/horizon.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=Horizon
+Exec=$client --serverURL=$SERVER_URL --fullscreen
+EOF
+  echo "Done. Reboot to test."
+}
+
+do_autologin_off() {
+  log "Disabling autologin and autostart"
+  rm -f /etc/sddm.conf.d/autologin.conf /etc/xdg/autostart/horizon.desktop
+  echo "Done."
+}
+
+need_root
+case "${1:-}" in
+  install)        do_install ;;
+  cleanup)        do_cleanup ;;
+  autologin)      do_autologin ;;
+  autologin-off)  do_autologin_off ;;
+  *) echo "Usage: $0 {install|cleanup|autologin|autologin-off}"; exit 1 ;;
+esac
