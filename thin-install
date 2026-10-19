@@ -7,6 +7,8 @@
 #   ./install-thinclient.sh cleanup        # remove build tools (run after testing the client)
 #   ./install-thinclient.sh autologin      # enable autologin + autostart Horizon
 #   ./install-thinclient.sh autologin-off  # undo autologin + autostart
+#   ./install-thinclient.sh check-video    # show GPU, driver and firmware messages
+#   ./install-thinclient.sh bootloader     # reinstall GRUB (UEFI, --removable)
 
 set -euo pipefail
 
@@ -34,12 +36,19 @@ install_packages() {
   pacman -Syu --noconfirm
   # NOTE: the lxqt group installs all members with --noconfirm
   pacman -S --needed --noconfirm \
-    xorg-server mesa xf86-video-amdgpu \
+    xorg-server mesa linux-firmware xf86-video-ati \
     lxqt openbox sddm \
     networkmanager network-manager-applet \
     pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils pavucontrol-qt \
     kvantum papirus-icon-theme \
+    dosfstools smartmontools hdparm pciutils \
     base-devel git
+
+  # Radeon HD 6320 (t610) firmware is in a separate package on current Arch, if it exists
+  pacman -S --needed --noconfirm linux-firmware-radeon 2>/dev/null || true
+
+  # Rebuild the ramdisk so the GPU firmware is picked up
+  mkinitcpio -P
 
   systemctl enable NetworkManager sddm
   systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
@@ -165,11 +174,38 @@ do_autologin_off() {
   echo "Done."
 }
 
+do_check_video() {
+  log "Video hardware and driver in use"
+  lspci -k | grep -A3 -E 'VGA|Display' || true
+  echo
+  log "Kernel command line (nomodeset means the GPU is switched off)"
+  cat /proc/cmdline
+  echo
+  log "Radeon firmware files for the Wrestler chip (HD 6320) should exist"
+  ls /usr/lib/firmware/radeon/ 2>/dev/null | grep -iE 'palm|sumo' || echo "WARNING: PALM/SUMO firmware not found"
+  echo
+  log "Graphics firmware or driver messages"
+  dmesg | grep -iE 'radeon|amdgpu|firmware' | tail -20 || true
+}
+
+do_bootloader() {
+  log "Refreshing the GRUB bootloader (UEFI, removable path so the BIOS always finds it)"
+  [[ -d /sys/firmware/efi ]] || die "Not booted in UEFI mode. Not changing the bootloader."
+  mountpoint -q /boot || die "/boot is not mounted. Mount the EFI partition first."
+  pacman -S --needed --noconfirm grub efibootmgr dosfstools
+  grub-install --target=x86_64-efi --efi-directory=/boot --removable --no-nvram
+  grub-mkconfig -o /boot/grub/grub.cfg
+  ls /boot/EFI/BOOT/
+  echo "Done."
+}
+
 need_root
 case "${1:-}" in
+  check-video)    do_check_video ;;
+  bootloader)     do_bootloader ;;
   install)        do_install ;;
   cleanup)        do_cleanup ;;
   autologin)      do_autologin ;;
   autologin-off)  do_autologin_off ;;
-  *) echo "Usage: $0 {install|cleanup|autologin|autologin-off}"; exit 1 ;;
+  *) echo "Usage: $0 {install|cleanup|autologin|autologin-off|check-video|bootloader}"; exit 1 ;;
 esac
