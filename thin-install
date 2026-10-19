@@ -13,7 +13,7 @@ set -euo pipefail
 # ---------- Settings: edit these ----------
 THIN_USER="thinuser"
 BUILD_USER="builder"
-AUR_PKG="vmware-horizon-client"          # if the clone fails, the AUR package was renamed (Omnissa)
+AUR_PKG="omnissa-horizon-client"          # if the clone fails, the AUR package was renamed (Omnissa)
 SERVER_URL="vdi.yourcompany.com"
 PKG_SAVE_DIR="/root/packages"
 # ------------------------------------------
