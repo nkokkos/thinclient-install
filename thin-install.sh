@@ -18,6 +18,12 @@ BUILD_USER="builder"
 AUR_PKG="omnissa-horizon-client"         # https://aur.archlinux.org/packages/omnissa-horizon-client
 SERVER_URL="vdi.yourcompany.com"
 PKG_SAVE_DIR="/root/packages"
+# Extra applications from the official repos (edit this list to add or remove apps).
+# firefox / chromium = browsers (Chromium is the open-source base of Google Chrome)
+# abiword            = light word processor that opens and saves .docx
+# fonts + dictionary = so documents and web pages look right
+# For the full LibreOffice suite use "libreoffice-fresh" (about 1 GB, slow on a t610).
+APPS=(firefox chromium abiword ttf-liberation ttf-dejavu hunspell-en_us)
 # ------------------------------------------
 
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
@@ -60,6 +66,13 @@ install_packages() {
     kvantum papirus-icon-theme \
     dosfstools smartmontools hdparm pciutils \
     base-devel git
+
+  # Browsers and word processor. A wrong name here must not break the base install.
+  if ((${#APPS[@]})); then
+    log "Installing applications: ${APPS[*]}"
+    pacman -S --needed --noconfirm "${APPS[@]}" \
+      || warn "Some applications failed to install. Check the names in APPS and run: pacman -S --needed <name>"
+  fi
 
   # Radeon HD 6320 (t610) firmware is in a separate package on current Arch, if it exists
   pacman -S --needed --noconfirm linux-firmware-radeon 2>/dev/null || true
@@ -177,6 +190,7 @@ Next steps:
   2. Log in as $THIN_USER, session "LXQt Desktop"
   3. Test in a terminal:   $client --serverURL=$SERVER_URL --fullscreen
   4. Test sound:           wpctl status
+     Apps (Firefox, Chromium, AbiWord) are in the LXQt start menu.
   5. When all works:       ./install-thinclient.sh cleanup
   6. Optional:             ./install-thinclient.sh autologin
 EOF
