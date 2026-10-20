@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Thin client installer: Arch Linux + LXQt + PipeWire + VMware/Omnissa Horizon client
+# Thin client installer: Arch Linux + LXQt + LightDM + PipeWire + Omnissa Horizon client
 # Target: HP t610 (AMD GPU). Run as root on a fresh Arch install.
 #
 # Usage:
@@ -15,17 +15,34 @@ set -euo pipefail
 # ---------- Settings: edit these ----------
 THIN_USER="thinuser"
 BUILD_USER="builder"
-AUR_PKG="omnissa-horizon-client"          # if the clone fails, the AUR package was renamed (Omnissa)
+AUR_PKG="omnissa-horizon-client"         # https://aur.archlinux.org/packages/omnissa-horizon-client
 SERVER_URL="vdi.yourcompany.com"
 PKG_SAVE_DIR="/root/packages"
 # ------------------------------------------
 
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 die()  { printf '\n\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
+warn() { printf '\n\033[1;33mWARNING: %s\033[0m\n' "$*"; }
 need_root() { [[ $EUID -eq 0 ]] || die "Run this script as root."; }
 
+# Refuse settings that could make rm -rf or userdel -r hit the wrong place
+check_settings() {
+  local v
+  for v in THIN_USER BUILD_USER AUR_PKG PKG_SAVE_DIR; do
+    [[ -n "${!v}" ]] || die "Setting $v is empty."
+  done
+  [[ "$BUILD_USER" != "root" && "$THIN_USER" != "root" ]] \
+    || die "THIN_USER and BUILD_USER must not be root."
+  [[ "$BUILD_USER" != "$THIN_USER" ]] \
+    || die "BUILD_USER and THIN_USER must be different (cleanup deletes BUILD_USER's home)."
+  [[ "$AUR_PKG" =~ ^[A-Za-z0-9@._+-]+$ ]] \
+    || die "AUR_PKG contains unexpected characters."
+  [[ "$PKG_SAVE_DIR" == /?* ]] \
+    || die "PKG_SAVE_DIR must be an absolute path other than /."
+}
+
 detect_client() {
-  for c in vmware-view horizon-client; do
+  for c in horizon-client vmware-view; do
     command -v "$c" >/dev/null 2>&1 && { echo "$c"; return; }
   done
   die "Horizon client command not found. Is the package installed?"
@@ -37,7 +54,7 @@ install_packages() {
   # NOTE: the lxqt group installs all members with --noconfirm
   pacman -S --needed --noconfirm \
     xorg-server mesa linux-firmware xf86-video-ati \
-    lxqt openbox sddm \
+    lxqt openbox lightdm lightdm-gtk-greeter \
     networkmanager network-manager-applet \
     pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils pavucontrol-qt \
     kvantum papirus-icon-theme \
@@ -47,10 +64,25 @@ install_packages() {
   # Radeon HD 6320 (t610) firmware is in a separate package on current Arch, if it exists
   pacman -S --needed --noconfirm linux-firmware-radeon 2>/dev/null || true
 
-  # Rebuild the ramdisk so the GPU firmware is picked up
+  # Load the radeon driver early (early KMS) by adding it to MODULES
+  if ! grep -q '^MODULES=(.*radeon.*)' /etc/mkinitcpio.conf; then
+    sed -i 's/^MODULES=(/MODULES=(radeon /' /etc/mkinitcpio.conf
+  fi
+  grep -q '^MODULES=(.*radeon.*)' /etc/mkinitcpio.conf \
+    || warn "Could not add radeon to MODULES in /etc/mkinitcpio.conf. Add it by hand."
+
+  # Rebuild the ramdisk so the GPU driver and firmware are picked up
   mkinitcpio -P
 
-  systemctl enable NetworkManager sddm
+  # LightDM replaces SDDM: only one display manager can own display-manager.service
+  systemctl disable sddm 2>/dev/null || true
+  rm -f /etc/sddm.conf.d/autologin.conf
+  if pacman -Qi sddm >/dev/null 2>&1; then
+    pacman -Rns --noconfirm sddm \
+      || warn "Could not remove sddm (another package needs it). It is disabled, which is enough."
+  fi
+
+  systemctl enable NetworkManager lightdm
   systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
 }
 
@@ -58,10 +90,15 @@ build_client() {
   log "Building $AUR_PKG as unprivileged user '$BUILD_USER'"
   id "$BUILD_USER" >/dev/null 2>&1 || useradd -m "$BUILD_USER"
 
-  local dir="/home/$BUILD_USER/$AUR_PKG"
-  rm -rf "$dir"
+  local dir="/home/${BUILD_USER:?}/${AUR_PKG:?}"
+  # Only ever delete a folder inside the build user's own home
+  [[ "$dir" == "/home/$BUILD_USER/"?* ]] || die "Refusing to delete unexpected path: $dir"
+  rm -rf -- "$dir"
   su - "$BUILD_USER" -c "git clone https://aur.archlinux.org/$AUR_PKG.git" \
-    || die "git clone failed. Search the AUR for 'horizon client' and set AUR_PKG."
+    || die "git clone failed. Check the AUR_PKG name and your network connection."
+
+  # The AUR creates an EMPTY repository for any name, so a clone can "succeed" for a package that does not exist
+  [[ -f "$dir/PKGBUILD" ]] || die "No PKGBUILD in $dir. The AUR package '$AUR_PKG' does not exist under that name. Run: curl -s 'https://aur.archlinux.org/rpc/v5/search/omnissa?by=name'"
 
   log "Source URLs in the PKGBUILD (should be vmware.com or omnissa.com):"
   grep -E '^\s*(source|_url|url)' "$dir/PKGBUILD" || true
@@ -72,13 +109,24 @@ build_client() {
   pacman -S --needed --noconfirm resvg oxipng
 
   log "Installing any other dependencies listed in the PKGBUILD"
-  local deps
-  deps=$(su - "$BUILD_USER" -c "cd $AUR_PKG && makepkg --printsrcinfo" \
-         | awk '/^[[:space:]]*(make)?depends = /{print $3}' \
-         | sed 's/[<>=].*//' | sort -u)
-  # shellcheck disable=SC2086
-  pacman -S --needed --noconfirm --asdeps $deps \
-    || die "Some dependencies are not in the official repos. Install them manually, then re-run."
+  local srcinfo pkgnames d
+  local -a found=() missing=()
+  srcinfo=$(su - "$BUILD_USER" -c "cd $AUR_PKG && makepkg --printsrcinfo")
+  # Names this PKGBUILD builds itself (split packages can depend on each other)
+  pkgnames=$(awk '/^[[:space:]]*pkgname = /{print $3}' <<<"$srcinfo")
+  while read -r d; do
+    [[ -z "$d" ]] && continue
+    grep -qx -- "$d" <<<"$pkgnames" && continue     # built by this PKGBUILD, not in the repos
+    if pacman -Sp "$d" >/dev/null 2>&1; then found+=("$d"); else missing+=("$d"); fi
+  done < <(awk '/^[[:space:]]*(make)?depends = /{print $3}' <<<"$srcinfo" | sed 's/[<>=].*//' | sort -u)
+
+  if ((${#found[@]})); then
+    pacman -S --needed --noconfirm --asdeps "${found[@]}"
+  fi
+  if ((${#missing[@]})); then
+    printf '\n\033[1;33mWARNING: not in the official repos (AUR only?): %s\033[0m\n' "${missing[*]}"
+    echo "Build them first the same way, or install them, then re-run. Continuing; makepkg will fail if they are really needed."
+  fi
 
   log "Compiling"
   su - "$BUILD_USER" -c "cd $AUR_PKG && makepkg --noconfirm"
@@ -98,6 +146,14 @@ icon_theme=Papirus
 
 [Qt]
 style=kvantum
+EOF
+
+  log "LightDM defaults (greeter and session)"
+  mkdir -p /etc/lightdm/lightdm.conf.d
+  cat > /etc/lightdm/lightdm.conf.d/10-thinclient.conf <<'EOF'
+[Seat:*]
+greeter-session=lightdm-gtk-greeter
+user-session=lxqt
 EOF
 
   log "Creating user '$THIN_USER' (no sudo)"
@@ -130,7 +186,14 @@ do_cleanup() {
   log "Removing build user and build tools"
   pacman -Qi "$AUR_PKG" >/dev/null 2>&1 || die "$AUR_PKG is not installed. Not cleaning up."
 
-  userdel -r "$BUILD_USER" 2>/dev/null || true
+  # Delete the build user only if its home is a normal folder under /home
+  if id "$BUILD_USER" >/dev/null 2>&1; then
+    local build_home
+    build_home=$(getent passwd "$BUILD_USER" | cut -d: -f6)
+    [[ "$build_home" == "/home/$BUILD_USER" ]] \
+      || die "Home of $BUILD_USER is '$build_home', not /home/$BUILD_USER. Not deleting it."
+    userdel -r "$BUILD_USER"
+  fi
 
   # Remove one by one: pacman refuses packages still required by others, which is what we want
   for p in git $(pacman -Sgq base-devel) resvg oxipng; do
@@ -153,11 +216,16 @@ do_cleanup() {
 do_autologin() {
   local client; client=$(detect_client)
   log "Enabling autologin for $THIN_USER and autostart of $client"
-  mkdir -p /etc/sddm.conf.d
-  cat > /etc/sddm.conf.d/autologin.conf <<EOF
-[Autologin]
-User=$THIN_USER
-Session=lxqt.desktop
+  id "$THIN_USER" >/dev/null 2>&1 || die "User $THIN_USER does not exist. Run 'install' first."
+  # LightDM's PAM autologin rule only accepts users in the "autologin" group
+  groupadd -rf autologin
+  usermod -aG autologin "$THIN_USER"
+  mkdir -p /etc/lightdm/lightdm.conf.d /etc/xdg/autostart
+  cat > /etc/lightdm/lightdm.conf.d/20-autologin.conf <<EOF
+[Seat:*]
+autologin-user=$THIN_USER
+autologin-user-timeout=0
+autologin-session=lxqt
 EOF
   cat > /etc/xdg/autostart/horizon.desktop <<EOF
 [Desktop Entry]
@@ -170,7 +238,8 @@ EOF
 
 do_autologin_off() {
   log "Disabling autologin and autostart"
-  rm -f /etc/sddm.conf.d/autologin.conf /etc/xdg/autostart/horizon.desktop
+  rm -f /etc/lightdm/lightdm.conf.d/20-autologin.conf /etc/xdg/autostart/horizon.desktop
+  gpasswd -d "$THIN_USER" autologin 2>/dev/null || true
   echo "Done."
 }
 
@@ -200,6 +269,7 @@ do_bootloader() {
 }
 
 need_root
+check_settings
 case "${1:-}" in
   check-video)    do_check_video ;;
   bootloader)     do_bootloader ;;
