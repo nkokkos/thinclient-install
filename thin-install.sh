@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Thin client installer: Arch Linux + LXQt + LightDM + PipeWire + Omnissa Horizon client
 # Target: HP t610 (AMD GPU). Run as root on a fresh Arch install.
+
+# For HP t610 gpu mode should be set to modesetting
+
 #
 # Usage:
 #   ./install-thinclient.sh install        # packages, Horizon client, thinuser, themes
@@ -11,6 +14,7 @@
 #   ./install-thinclient.sh bootloader     # reinstall GRUB (UEFI, --removable)
 #   ./install-thinclient.sh debug-gui      # save GPU/Xorg/kernel logs to /root/gui-debug.txt
 #   ./install-thinclient.sh gpu-mode MODE  # MODE: glamor | exa | none | modesetting | reset
+
 
 set -euo pipefail
 
