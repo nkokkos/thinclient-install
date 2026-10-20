@@ -1,4 +1,4 @@
-Sometimes installing with behind a firewall creates a problem with ntp
+Sometimes installing behind a firewall creates a problem with ntp
 
 
 Before running archinstall:
@@ -16,9 +16,10 @@ archinstall --skip-ntp --skip-wkd
 
 ```
 
-After running archinstall and rebooting
-
+After running archinstall:
 
 Download the file with curl:
 
 curl -O https://raw.githubusercontent.com/nkokkos/thinclient-install/main/thin-install.sh
+
+and run it
