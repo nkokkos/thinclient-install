@@ -65,7 +65,7 @@ install_packages() {
   pacman -Syu --noconfirm
   # NOTE: the lxqt group installs all members with --noconfirm
   pacman -S --needed --noconfirm \
-    xorg-server mesa linux-firmware \
+    xorg-server mesa linux-firmware xorg-xrandr \
     lxqt openbox lightdm lightdm-gtk-greeter xfce4 xfce-goodies \
     networkmanager network-manager-applet \
     pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils pavucontrol-qt \
