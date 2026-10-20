@@ -9,6 +9,8 @@
 #   ./install-thinclient.sh autologin-off  # undo autologin + autostart
 #   ./install-thinclient.sh check-video    # show GPU, driver and firmware messages
 #   ./install-thinclient.sh bootloader     # reinstall GRUB (UEFI, --removable)
+#   ./install-thinclient.sh debug-gui      # save GPU/Xorg/kernel logs to /root/gui-debug.txt
+#   ./install-thinclient.sh gpu-mode MODE  # MODE: glamor | exa | none | modesetting | reset
 
 set -euo pipefail
 
@@ -282,14 +284,72 @@ do_bootloader() {
   echo "Done."
 }
 
+# Collect everything needed to diagnose black screen / flicker problems into one file
+do_debug_gui() {
+  local out=/root/gui-debug.txt
+  log "Collecting GUI/GPU debug information into $out"
+  (
+    set +e   # keep going when a single check fails
+    echo "### date / kernel"; date; uname -r
+    echo; echo "### kernel command line"; cat /proc/cmdline
+    echo; echo "### GPU and driver in use"; lspci -k | grep -A3 -E 'VGA|Display'
+    echo; echo "### graphics packages"; pacman -Q xorg-server mesa xf86-video-ati linux-firmware linux-firmware-radeon lightdm 2>&1
+    echo; echo "### Xorg config files"; ls -l /etc/X11/xorg.conf.d/ 2>&1; cat /etc/X11/xorg.conf.d/*.conf 2>/dev/null
+    echo; echo "### Xorg errors and warnings"
+    grep -hE '\(EE\)|\(WW\)' /var/log/Xorg.0.log /var/log/lightdm/x-0.log \
+      "/home/$THIN_USER/.local/share/xorg/Xorg.0.log" 2>/dev/null | sort -u | tail -60
+    echo; echo "### Kernel GPU messages (lockup, ring, fence = GPU hang)"
+    dmesg | grep -iE 'radeon|drm|gpu|ring|lockup|fence|hung' | tail -60
+    echo; echo "### Errors this boot"; journalctl -b -p err --no-pager | tail -40
+    echo; echo "### Window manager / compositor processes"
+    ps -eo comm | grep -iE 'picom|compton|kwin|openbox|xcompmgr|lxqt-session|pcmanfm' | sort -u
+    echo; echo "### Memory"; free -h
+  ) > "$out" 2>&1
+  echo "Saved. Read it with:  less $out"
+}
+
+# Switch the Xorg graphics driver mode to find a stable setting
+do_gpu_mode() {
+  local mode="${1:-}"
+  local conf=/etc/X11/xorg.conf.d/20-gpu.conf
+  mkdir -p /etc/X11/xorg.conf.d
+  case "$mode" in
+    glamor|exa|none)
+      pacman -Qi xf86-video-ati >/dev/null 2>&1 || die "xf86-video-ati is not installed."
+      cat > "$conf" <<EOF
+Section "Device"
+    Identifier "Radeon"
+    Driver "radeon"
+    Option "AccelMethod" "$mode"
+EndSection
+EOF
+      ;;
+    modesetting)
+      cat > "$conf" <<'EOF'
+Section "Device"
+    Identifier "GPU"
+    Driver "modesetting"
+EndSection
+EOF
+      ;;
+    reset) rm -f "$conf" ;;
+    *) die "Usage: $0 gpu-mode {glamor|exa|none|modesetting|reset}" ;;
+  esac
+  log "GPU mode set to: $mode. Reboot to apply:  reboot"
+  echo "If the screen still flickers, try in this order: exa, none, modesetting."
+  echo "'reset' removes the setting. Settings file: $conf"
+}
+
 need_root
 check_settings
 case "${1:-}" in
+  debug-gui)      do_debug_gui ;;
+  gpu-mode)       do_gpu_mode "${2:-}" ;;
   check-video)    do_check_video ;;
   bootloader)     do_bootloader ;;
   install)        do_install ;;
   cleanup)        do_cleanup ;;
   autologin)      do_autologin ;;
   autologin-off)  do_autologin_off ;;
-  *) echo "Usage: $0 {install|cleanup|autologin|autologin-off|check-video|bootloader}"; exit 1 ;;
+  *) echo "Usage: $0 {install|cleanup|autologin|autologin-off|check-video|bootloader|debug-gui|gpu-mode}"; exit 1 ;;
 esac
