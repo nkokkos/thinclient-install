@@ -34,8 +34,11 @@ and update
 
 /var/lib/AccountsService/users/thinuser to match (Session=lxqt or Session=xfce), 
 
-then delete the user's cached session file (rm -f /home/thinuser/.dmrc) 
 
-and restart the display manager using 
+then delete the user's cached session file (rm -f /home/thinuser/.dmrc)
+
+
+and restart the display manager using
+
 
 sudo systemctl restart lightdm,
