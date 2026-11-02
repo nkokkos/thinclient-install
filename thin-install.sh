@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
-# Thin client installer: Arch Linux + LXQt + LightDM + PipeWire + Omnissa Horizon client
+# Thin client installer: Arch Linux + XFCE + LXQt + LightDM + PipeWire + Omnissa Horizon client
 # Target: HP t610 (AMD GPU). Run as root on a fresh Arch install.
-
-# For HP t610 gpu mode should be set to modesetting
-
+#
+# For HP t610 the Xorg GPU mode is set to "modesetting" during install.
 #
 # Usage:
 #   ./install-thinclient.sh install        # packages, Horizon client, thinuser, themes
+#   ./install-thinclient.sh greek          # add Greek locale, keyboard (Alt+Shift), spell check (also done by install)
+#   ./install-thinclient.sh save-prefs     # copy Horizon client settings (Blast codecs) to all new users
 #   ./install-thinclient.sh cleanup        # remove build tools (run after testing the client)
 #   ./install-thinclient.sh autologin      # enable autologin + autostart Horizon
 #   ./install-thinclient.sh autologin-off  # undo autologin + autostart
-#   ./install-thinclient.sh check-video    # show GPU, driver and firmware messages
+#   ./install-thinclient.sh check-video    # show GPU, driver, decoding and firmware messages
 #   ./install-thinclient.sh bootloader     # reinstall GRUB (UEFI, --removable)
-#   ./install-thinclient.sh debug-gui      # save GPU/Xorg/kernel logs to /root/gui-debug.txt
+#   ./install-thinclient.sh debug-gui      # save GPU/Xorg/kernel/Horizon logs to /root/gui-debug.txt
 #   ./install-thinclient.sh gpu-mode MODE  # MODE: glamor | exa | none | modesetting | reset
-
+#
+# BLANK / BLACK REMOTE SCREEN (Horizon connects but the desktop is empty):
+#   1. In the client open Settings > Blast and untick H.264 and HEVC decoding.
+#   2. Close the client, then run:  ./install-thinclient.sh save-prefs
+#   3. If still blank, test in a terminal inside the LXQt session:
+#        LIBGL_ALWAYS_SOFTWARE=1 horizon-client --serverURL=YOUR_SERVER
 
 set -euo pipefail
 
@@ -30,7 +36,12 @@ PKG_SAVE_DIR="/root/packages"
 # fonts + dictionary = so documents and web pages look right
 # For the full LibreOffice suite use "libreoffice-fresh" (about 1 GB, slow on a t610).
 APPS=(firefox chromium abiword ttf-liberation ttf-dejavu hunspell-en_us)
+# Both XFCE and LXQt are installed. Which one starts by default? "xfce" or "lxqt".
+# The other one stays available in the session menu on the login screen.
+DEFAULT_SESSION="xfce"
 # ------------------------------------------
+
+PLACEHOLDER_SERVER="vdi.yourcompany.com"
 
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 die()  { printf '\n\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -51,6 +62,25 @@ check_settings() {
     || die "AUR_PKG contains unexpected characters."
   [[ "$PKG_SAVE_DIR" == /?* ]] \
     || die "PKG_SAVE_DIR must be an absolute path other than /."
+  [[ "$DEFAULT_SESSION" == "xfce" || "$DEFAULT_SESSION" == "lxqt" ]] \
+    || die "DEFAULT_SESSION must be \"xfce\" or \"lxqt\"."
+}
+
+# Checks that must pass before the long install starts
+preflight() {
+  [[ -f /etc/arch-release ]] || die "This script is for Arch Linux."
+  command -v pacman >/dev/null 2>&1 || die "pacman not found."
+  log "Checking the network"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS --max-time 15 -o /dev/null https://aur.archlinux.org \
+      || die "Cannot reach aur.archlinux.org. Check the network (nmcli, ping) and try again."
+  else
+    ping -c1 -W5 archlinux.org >/dev/null 2>&1 \
+      || die "No network. Check the connection and try again."
+  fi
+  if [[ "$SERVER_URL" == "$PLACEHOLDER_SERVER" ]]; then
+    warn "SERVER_URL is still the placeholder ($PLACEHOLDER_SERVER). Edit it at the top of this script before running 'autologin'."
+  fi
 }
 
 detect_client() {
@@ -64,14 +94,23 @@ install_packages() {
   log "Installing system packages"
   pacman -Syu --noconfirm
   # NOTE: the lxqt group installs all members with --noconfirm
+  # xf86-input-libinput and xorg-xauth are needed for keyboard, mouse and LightDM to work in X
   pacman -S --needed --noconfirm \
-    xorg-server mesa linux-firmware xorg-xrandr \
-    lxqt openbox lightdm lightdm-gtk-greeter xfce4 xfce-goodies \
+    xorg-server xorg-xauth xf86-input-libinput mesa linux-firmware xorg-xrandr \
+    lxqt openbox xfce4 xfce4-goodies lightdm lightdm-gtk-greeter \
     networkmanager network-manager-applet \
     pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils pavucontrol-qt \
     kvantum papirus-icon-theme \
     dosfstools smartmontools hdparm pciutils \
-    base-devel git
+    base-devel git curl
+
+  # Video decoding and diagnostic tools. Optional: a wrong name must not break the base install.
+  log "Installing optional video diagnostic tools"
+  local p
+  for p in libva-utils mesa-utils vdpauinfo libva-mesa-driver mesa-vdpau; do
+    pacman -S --needed --noconfirm "$p" >/dev/null 2>&1 \
+      || warn "Optional package $p was not installed (not needed to run the client)."
+  done
 
   # Browsers and word processor. A wrong name here must not break the base install.
   if ((${#APPS[@]})); then
@@ -167,13 +206,39 @@ icon_theme=Papirus
 style=kvantum
 EOF
 
+  # XFCE: turn the window compositor off for new users (lighter on a t610, and avoids
+  # blank-window problems with remote desktop clients)
+  mkdir -p /etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml
+  cat > /etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="use_compositing" type="bool" value="false"/>
+  </property>
+</channel>
+EOF
+
   log "LightDM defaults (greeter and session)"
   mkdir -p /etc/lightdm/lightdm.conf.d
-  cat > /etc/lightdm/lightdm.conf.d/10-thinclient.conf <<'EOF'
+  [[ -f "/usr/share/xsessions/$DEFAULT_SESSION.desktop" ]] \
+    || die "Session file /usr/share/xsessions/$DEFAULT_SESSION.desktop not found. Is the desktop installed?"
+  cat > /etc/lightdm/lightdm.conf.d/10-thinclient.conf <<EOF
 [Seat:*]
 greeter-session=lightdm-gtk-greeter
-user-session=lxqt
+user-session=$DEFAULT_SESSION
 EOF
+
+  # HP t610: use the modesetting Xorg driver (kept if you already chose a mode with gpu-mode)
+  if [[ ! -f /etc/X11/xorg.conf.d/20-gpu.conf ]]; then
+    log "Setting Xorg GPU mode to modesetting (HP t610)"
+    mkdir -p /etc/X11/xorg.conf.d
+    cat > /etc/X11/xorg.conf.d/20-gpu.conf <<'EOF'
+Section "Device"
+    Identifier "GPU"
+    Driver "modesetting"
+EndSection
+EOF
+  fi
 
   log "Creating user '$THIN_USER' (no sudo)"
   if ! id "$THIN_USER" >/dev/null 2>&1; then
@@ -183,23 +248,90 @@ EOF
   fi
 }
 
+# Greek support: locale, keyboard layout, spell check and Firefox language pack.
+# The system language stays English. Greek is added for typing (Alt+Shift switches
+# between US and Greek), spell checking, and as a language you can pick at login.
+# Greek fonts are already covered by ttf-dejavu and ttf-liberation.
+configure_greek() {
+  log "Adding Greek language support"
+
+  # Locales: make sure en_US and el_GR are enabled, then generate them
+  local loc
+  for loc in "en_US.UTF-8 UTF-8" "el_GR.UTF-8 UTF-8"; do
+    sed -i "s/^#\(${loc}\)/\1/" /etc/locale.gen
+    grep -qxF "$loc" /etc/locale.gen || echo "$loc" >> /etc/locale.gen
+  done
+  locale-gen
+  [[ -f /etc/locale.conf ]] || echo 'LANG=en_US.UTF-8' > /etc/locale.conf
+
+  # Spell check (AbiWord, Firefox) and Firefox Greek language pack. Optional.
+  local p
+  for p in hunspell-el firefox-i18n-el; do
+    pacman -S --needed --noconfirm "$p" >/dev/null 2>&1 \
+      || warn "Optional package $p was not installed."
+  done
+
+  # Keyboard: US + Greek, Alt+Shift to switch. Do not overwrite an existing keyboard config.
+  local kb=/etc/X11/xorg.conf.d/00-keyboard.conf
+  if [[ -f "$kb" ]]; then
+    warn "$kb already exists, not changing it. To add Greek, set XkbLayout to \"us,gr\" and XkbOptions to \"grp:alt_shift_toggle\" in that file."
+  else
+    mkdir -p /etc/X11/xorg.conf.d
+    cat > "$kb" <<'EOF'
+Section "InputClass"
+    Identifier "keyboard-layouts"
+    MatchIsKeyboard "on"
+    Option "XkbLayout" "us,gr"
+    Option "XkbOptions" "grp:alt_shift_toggle"
+EndSection
+EOF
+  fi
+  echo "Greek added. Alt+Shift switches the keyboard between US and Greek after the next login."
+  echo "To use Greek as the display language, set in /etc/locale.conf:  LANG=el_GR.UTF-8"
+}
+
 do_install() {
+  preflight
   install_packages
   build_client
   configure_system
+  configure_greek
   local client; client=$(detect_client)
   log "Install finished."
   cat <<EOF
 
 Next steps:
   1. reboot
-  2. Log in as $THIN_USER, session "LXQt Desktop"
-  3. Test in a terminal:   $client --serverURL=$SERVER_URL --fullscreen
-  4. Test sound:           wpctl status
+  2. Log in as $THIN_USER. Default session: $DEFAULT_SESSION (pick the other one, XFCE or LXQt, in the session menu on the login screen)
+  3. Open a terminal and test:   $client --serverURL=$SERVER_URL --fullscreen
+  4. If the remote desktop is BLANK or BLACK:
+       a. In the client: Settings > Blast, untick H.264 and HEVC decoding
+       b. Close the client and run (as root):  ./install-thinclient.sh save-prefs
+       c. Still blank? Try:  LIBGL_ALWAYS_SOFTWARE=1 $client --serverURL=$SERVER_URL
+       d. Then run:  ./install-thinclient.sh debug-gui   and read /root/gui-debug.txt
+  5. Greek: Alt+Shift switches the keyboard between US and Greek.
+     For the remote Windows desktop, the Greek keyboard layout must also be added inside Windows.
+     Test sound:           wpctl status
      Apps (Firefox, Chromium, AbiWord) are in the LXQt start menu.
-  5. When all works:       ./install-thinclient.sh cleanup
-  6. Optional:             ./install-thinclient.sh autologin
+  6. When all works:       ./install-thinclient.sh cleanup
+  7. Optional:             ./install-thinclient.sh autologin
 EOF
+}
+
+# Copy the Horizon client settings (for example the Blast codec choice) so new users get them too
+do_save_prefs() {
+  local src="${1:-/home/$THIN_USER/.vmware/view-preferences}"
+  local dst_skel=/etc/skel/.vmware/view-preferences
+  local dst_user="/home/$THIN_USER/.vmware/view-preferences"
+  [[ -f "$src" ]] || die "No settings file at $src. Log in as $THIN_USER, start the client, change Settings > Blast, close the client, then run this again."
+  log "Saving Horizon client settings from $src"
+  install -D -m 644 "$src" "$dst_skel"
+  if id "$THIN_USER" >/dev/null 2>&1 && ! [[ "$src" -ef "$dst_user" ]]; then
+    install -D -o "$THIN_USER" -g "$THIN_USER" -m 644 "$src" "$dst_user"
+  fi
+  echo "Saved to $dst_skel (used for every new user)."
+  echo "Settings in the file:"
+  cat "$src"
 }
 
 do_cleanup() {
@@ -235,6 +367,8 @@ do_cleanup() {
 
 do_autologin() {
   local client; client=$(detect_client)
+  [[ "$SERVER_URL" != "$PLACEHOLDER_SERVER" ]] \
+    || die "SERVER_URL is still the placeholder. Edit it at the top of this script first."
   log "Enabling autologin for $THIN_USER and autostart of $client"
   id "$THIN_USER" >/dev/null 2>&1 || die "User $THIN_USER does not exist. Run 'install' first."
   # LightDM's PAM autologin rule only accepts users in the "autologin" group
@@ -245,7 +379,7 @@ do_autologin() {
 [Seat:*]
 autologin-user=$THIN_USER
 autologin-user-timeout=0
-autologin-session=lxqt
+autologin-session=$DEFAULT_SESSION
 EOF
   cat > /etc/xdg/autostart/horizon.desktop <<EOF
 [Desktop Entry]
@@ -275,6 +409,13 @@ do_check_video() {
   echo
   log "Graphics firmware or driver messages"
   dmesg | grep -iE 'radeon|amdgpu|firmware' | tail -20 || true
+  echo
+  log "Video decoding support (H.264 missing = disable H.264/HEVC in the Horizon Blast settings)"
+  if command -v vainfo >/dev/null 2>&1; then
+    vainfo 2>&1 | head -20 || true
+  else
+    echo "vainfo is not installed (package libva-utils)."
+  fi
 }
 
 do_bootloader() {
@@ -298,6 +439,7 @@ do_debug_gui() {
     echo; echo "### kernel command line"; cat /proc/cmdline
     echo; echo "### GPU and driver in use"; lspci -k | grep -A3 -E 'VGA|Display'
     echo; echo "### graphics packages"; pacman -Q xorg-server mesa xf86-video-ati linux-firmware linux-firmware-radeon lightdm 2>&1
+    echo; echo "### video decoding (vainfo)"; vainfo 2>&1 | head -30
     echo; echo "### Xorg config files"; ls -l /etc/X11/xorg.conf.d/ 2>&1; cat /etc/X11/xorg.conf.d/*.conf 2>/dev/null
     echo; echo "### Xorg errors and warnings"
     grep -hE '\(EE\)|\(WW\)' /var/log/Xorg.0.log /var/log/lightdm/x-0.log \
@@ -305,6 +447,9 @@ do_debug_gui() {
     echo; echo "### Kernel GPU messages (lockup, ring, fence = GPU hang)"
     dmesg | grep -iE 'radeon|drm|gpu|ring|lockup|fence|hung' | tail -60
     echo; echo "### Errors this boot"; journalctl -b -p err --no-pager | tail -40
+    echo; echo "### Horizon client settings"; cat "/home/$THIN_USER/.vmware/view-preferences" 2>&1
+    echo; echo "### Horizon client log (errors, Blast, codec)"
+    grep -hiE 'error|fail|blast|codec|h264|hevc' /tmp/vmware-"$THIN_USER"/vmware-view-*.log 2>/dev/null | tail -40
     echo; echo "### Window manager / compositor processes"
     ps -eo comm | grep -iE 'picom|compton|kwin|openbox|xcompmgr|lxqt-session|pcmanfm' | sort -u
     echo; echo "### Memory"; free -h
@@ -319,7 +464,9 @@ do_gpu_mode() {
   mkdir -p /etc/X11/xorg.conf.d
   case "$mode" in
     glamor|exa|none)
-      pacman -Qi xf86-video-ati >/dev/null 2>&1 || die "xf86-video-ati is not installed."
+      # The radeon Xorg driver is only needed for these modes, so install it on demand
+      pacman -S --needed --noconfirm xf86-video-ati \
+        || die "Could not install xf86-video-ati."
       cat > "$conf" <<EOF
 Section "Device"
     Identifier "Radeon"
@@ -352,8 +499,10 @@ case "${1:-}" in
   check-video)    do_check_video ;;
   bootloader)     do_bootloader ;;
   install)        do_install ;;
+  greek)          configure_greek ;;
+  save-prefs)     do_save_prefs "${2:-}" ;;
   cleanup)        do_cleanup ;;
   autologin)      do_autologin ;;
   autologin-off)  do_autologin_off ;;
-  *) echo "Usage: $0 {install|cleanup|autologin|autologin-off|check-video|bootloader|debug-gui|gpu-mode}"; exit 1 ;;
+  *) echo "Usage: $0 {install|greek|save-prefs|cleanup|autologin|autologin-off|check-video|bootloader|debug-gui|gpu-mode}"; exit 1 ;;
 esac
