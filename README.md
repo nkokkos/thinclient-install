@@ -1,4 +1,4 @@
-This script installs archlinux and configures a  ***Target: HP t610 (AMD GPU) thin client***
+This script configures a  ***Target: HP t610 (AMD GPU) thin client*** archinstall completed installation. 
 
 Before running archinstall (sometimes installing behind a firewall creates a problem with ntp):
 
