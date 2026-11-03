@@ -141,6 +141,7 @@ install_packages() {
   fi
 
   systemctl enable NetworkManager lightdm
+  systemctl mask upower.service 2>/dev/null || true
   systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
 }
 
