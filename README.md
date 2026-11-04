@@ -1,5 +1,14 @@
 This script configures a  ***Target: HP t610 (AMD GPU) thin client*** archinstall completed installation. 
 
+First wipe all previous data:
+
+```
+wipefs -a /dev/sda
+sgdisk --zap-all /dev/sda
+partx -d --nr 1:128 /dev/sda
+lsblk
+```
+
 Before running archinstall (sometimes installing behind a firewall creates a problem with ntp):
 
 ```
