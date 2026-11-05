@@ -102,7 +102,8 @@ install_packages() {
     pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils pavucontrol-qt \
     kvantum papirus-icon-theme \
     dosfstools smartmontools hdparm pciutils \
-    base-devel git curl nss-mdns
+    base-devel git curl nss-mdns \
+    gvfs udisks2 thunar-volman ntfs-3g exfatprogs usbutils
 
   # Video decoding and diagnostic tools. Optional: a wrong name must not break the base install.
   log "Installing optional video diagnostic tools"
