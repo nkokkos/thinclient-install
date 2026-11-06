@@ -28,6 +28,7 @@ set -euo pipefail
 THIN_USER="thinuser"
 BUILD_USER="builder"
 AUR_PKG="omnissa-horizon-client"         # https://aur.archlinux.org/packages/omnissa-horizon-client
+LIBUDEV0="libudev0-shim"                 # https://aur.archlinux.org/packages/libudev0-shim # needed by the omnissa-horizon-client version 2414-6
 SERVER_URL="vdi.yourcompany.com"
 PKG_SAVE_DIR="/root/packages"
 # Extra applications from the official repos (edit this list to add or remove apps).
