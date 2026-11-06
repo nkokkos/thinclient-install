@@ -1,4 +1,4 @@
-This script configures a  ***Target: HP t610 (AMD GPU) thin client*** archinstall completed installation. 
+This script configures a  ***Target: HP t610 (AMD GPU) thin client***  archinstall completed installation. 
 
 First wipe all previous data:
 
@@ -54,4 +54,8 @@ and update
 
 then delete the user's cached session file: (rm -f /home/thinuser/.dmrc)
 
-Restart the display manager using ***sudo systemctl restart lightdm***
+Restart the display manager using:
+
+```
+***sudo systemctl restart lightdm***
+```
