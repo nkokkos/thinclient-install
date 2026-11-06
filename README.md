@@ -1,6 +1,6 @@
-This script configures a  *** HP t610 (AMD GPU) thin client*** archlinux installation
+This script configures a HP t610 (AMD GPU) thin client archlinux installation
 
-First wipe all previous data:
+First, once the archlinux boot iso boots, wipe all previous data:
 
 ```
 wipefs -a /dev/sda
