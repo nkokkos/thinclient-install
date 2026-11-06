@@ -1,4 +1,4 @@
-This script configures a  ***Target: HP t610 (AMD GPU) thin client*** archlinux installation
+This script configures a  *** HP t610 (AMD GPU) thin client*** archlinux installation
 
 First wipe all previous data:
 
