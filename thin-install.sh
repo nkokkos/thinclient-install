@@ -24,10 +24,11 @@
 
 set -euo pipefail
 
-# ---------- Settings: edit these ----------
+# ---------- Settings
 THIN_USER="thinuser"
 BUILD_USER="builder"
 AUR_PKG="omnissa-horizon-client"         # https://aur.archlinux.org/packages/omnissa-horizon-client
+AUR_PKG_REF="5e0361f"                    # checkout version 2414-6
 LIBUDEV0="libudev0-shim"                 # https://aur.archlinux.org/packages/libudev0-shim # needed by the omnissa-horizon-client version 2414-6
 SERVER_URL="vdi.yourcompany.com"
 PKG_SAVE_DIR="/root/packages"
@@ -146,39 +147,63 @@ install_packages() {
   systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
 }
 
+
+# Usage: build_client <aur-package> [commit-hash]
 build_client() {
-  log "Building $AUR_PKG as unprivileged user '$BUILD_USER'"
+  local pkg="${1:?package name required}"
+  local ref="${2:-}"
+  [[ "$pkg" =~ ^[a-z0-9@_+][a-z0-9@._+-]*$ ]] || die "Invalid package name: $pkg"
+  local dir="/home/${BUILD_USER:?}/$pkg"
+
+  log "Building $pkg as unprivileged user '$BUILD_USER'"
   id "$BUILD_USER" >/dev/null 2>&1 || useradd -m "$BUILD_USER"
 
-  local dir="/home/${BUILD_USER:?}/${AUR_PKG:?}"
   # Only ever delete a folder inside the build user's own home
   [[ "$dir" == "/home/$BUILD_USER/"?* ]] || die "Refusing to delete unexpected path: $dir"
   rm -rf -- "$dir"
-  su - "$BUILD_USER" -c "git clone https://aur.archlinux.org/$AUR_PKG.git" \
-    || die "git clone failed. Check the AUR_PKG name and your network connection."
+  su - "$BUILD_USER" -c "git clone https://aur.archlinux.org/$pkg.git" \
+    || die "git clone failed for $pkg. Check the name and your network connection."
 
   # The AUR creates an EMPTY repository for any name, so a clone can "succeed" for a package that does not exist
-  [[ -f "$dir/PKGBUILD" ]] || die "No PKGBUILD in $dir. The AUR package '$AUR_PKG' does not exist under that name. Run: curl -s 'https://aur.archlinux.org/rpc/v5/search/omnissa?by=name'"
+  [[ -f "$dir/PKGBUILD" ]] || die "No PKGBUILD in $dir. '$pkg' does not exist on the AUR."
 
-  log "Source URLs in the PKGBUILD (should be vmware.com or omnissa.com):"
-  grep -E '^\s*(source|_url|url)' "$dir/PKGBUILD" || true
-  read -r -p "Do the URLs look right? [y/N] " ok
+  if [[ -n "$ref" ]]; then
+    [[ "$ref" =~ ^[0-9a-f]{7,40}$ ]] || die "Invalid commit hash: $ref"
+    log "Checking out $ref"
+    su - "$BUILD_USER" -c "git -C $pkg checkout --quiet $ref" \
+      || die "Commit $ref not found in $pkg."
+    [[ -f "$dir/PKGBUILD" ]] || die "No PKGBUILD at commit $ref."
+    log "Pinned version:"
+    grep -E '^(pkgver|pkgrel)=' "$dir/PKGBUILD" || true
+  fi
+
+  log "Review the PKGBUILD (it runs as code)"
+  [[ -t 0 ]] || die "Needs a terminal for the review and confirmation prompt."
+  less "$dir/PKGBUILD"
+  if compgen -G "$dir/*.install" >/dev/null; then less "$dir"/*.install; fi
+  read -r -p "Is $pkg OK to build? [y/N] " ok
   [[ "$ok" =~ ^[Yy]$ ]] || die "Aborted by user."
 
-  log "Installing known build dependencies"
-  pacman -S --needed --noconfirm resvg oxipng
+  # Extra build tools only the horizon client needs
+  if [[ "$pkg" == "$AUR_PKG" ]]; then
+    log "Installing known build dependencies"
+    pacman -S --needed --noconfirm resvg oxipng
+  fi
 
   log "Installing any other dependencies listed in the PKGBUILD"
   local srcinfo pkgnames d
   local -a found=() missing=()
-  srcinfo=$(su - "$BUILD_USER" -c "cd $AUR_PKG && makepkg --printsrcinfo")
+  srcinfo=$(su - "$BUILD_USER" -c "cd $pkg && makepkg --printsrcinfo") \
+    || die "makepkg --printsrcinfo failed for $pkg."
   # Names this PKGBUILD builds itself (split packages can depend on each other)
   pkgnames=$(awk '/^[[:space:]]*pkgname = /{print $3}' <<<"$srcinfo")
   while read -r d; do
     [[ -z "$d" ]] && continue
-    grep -qx -- "$d" <<<"$pkgnames" && continue     # built by this PKGBUILD, not in the repos
-    if pacman -Sp "$d" >/dev/null 2>&1; then found+=("$d"); else missing+=("$d"); fi
-  done < <(awk '/^[[:space:]]*(make)?depends = /{print $3}' <<<"$srcinfo" | sed 's/[<>=].*//' | sort -u)
+    grep -qx -- "$d" <<<"$pkgnames" && continue            # built by this PKGBUILD
+    pacman -Qq "$d" >/dev/null 2>&1 && continue            # already installed (e.g. libudev0-shim)
+    if pacman -Sp --noconfirm "$d" >/dev/null 2>&1; then found+=("$d"); else missing+=("$d"); fi
+  done < <(awk '/^[[:space:]]*(make|check)?depends(_[a-z0-9_]+)? = /{print $3}' <<<"$srcinfo" \
+             | sed 's/[<>=].*//' | sort -u)
 
   if ((${#found[@]})); then
     pacman -S --needed --noconfirm --asdeps "${found[@]}"
@@ -189,12 +214,18 @@ build_client() {
   fi
 
   log "Compiling"
-  su - "$BUILD_USER" -c "cd $AUR_PKG && makepkg --noconfirm"
+  su - "$BUILD_USER" -c "cd $pkg && makepkg --noconfirm" || die "makepkg failed for $pkg."
 
-  log "Saving and installing the package"
+  log "Saving and installing"
+  local -a pkgs=()
+  local p
+  for p in "$dir"/*.pkg.tar.zst; do
+    [[ -e "$p" && "$p" != *-debug-* ]] && pkgs+=("$p")
+  done
+  ((${#pkgs[@]})) || die "No package file produced for $pkg."
   mkdir -p "$PKG_SAVE_DIR"
-  cp "$dir"/*.pkg.tar.zst "$PKG_SAVE_DIR"/
-  pacman -U --noconfirm "$dir"/*.pkg.tar.zst
+  cp -- "${pkgs[@]}" "$PKG_SAVE_DIR"/
+  pacman -U --noconfirm "${pkgs[@]}"
 }
 
 configure_system() {
