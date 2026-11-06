@@ -95,7 +95,7 @@ install_packages() {
   # NOTE: the lxqt group installs all members with --noconfirm
   # xf86-input-libinput and xorg-xauth are needed for keyboard, mouse and LightDM to work in X
   pacman -S --needed --noconfirm \
-    xorg-server xorg-xauth xf86-input-libinput mesa linux-firmware xorg-xrandr \
+    less xorg-server xorg-xauth xf86-input-libinput mesa linux-firmware xorg-xrandr \
     lxqt openbox xfce4 xfce4-goodies lightdm lightdm-gtk-greeter \
     networkmanager network-manager-applet \
     pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils pavucontrol-qt \
