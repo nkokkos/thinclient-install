@@ -32,11 +32,8 @@ AUR_PKG_REF="5e0361f"                    # checkout version 2414-6
 LIBUDEV0="libudev0-shim"                 # https://aur.archlinux.org/packages/libudev0-shim # needed by the omnissa-horizon-client version 2414-6
 SERVER_URL="vdi.yourcompany.com"
 PKG_SAVE_DIR="/root/packages"
-# Extra applications from the official repos (edit this list to add or remove apps).
-# firefox / chromium = browsers (Chromium is the open-source base of Google Chrome)
-# abiword            = light word processor that opens and saves .docx
-# fonts + dictionary = so documents and web pages look right
-# For the full LibreOffice suite use "libreoffice-fresh" (about 1 GB, slow on a t610).
+
+# fonts + dictionary = so documents and web pages look right, use falcon/epiphany web servers which are lightweight
 APPS=(ttf-liberation ttf-dejavu falcon epiphany)
 # Both XFCE and LXQt are installed. Which one starts by default? "xfce" or "lxqt".
 # The other one stays available in the session menu on the login screen.
