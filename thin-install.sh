@@ -35,7 +35,7 @@ PKG_SAVE_DIR="/root/packages"
 # abiword            = light word processor that opens and saves .docx
 # fonts + dictionary = so documents and web pages look right
 # For the full LibreOffice suite use "libreoffice-fresh" (about 1 GB, slow on a t610).
-APPS=(firefox chromium abiword ttf-liberation ttf-dejavu hunspell-en_us)
+APPS=(ttf-liberation ttf-dejavu)
 # Both XFCE and LXQt are installed. Which one starts by default? "xfce" or "lxqt".
 # The other one stays available in the session menu on the login screen.
 DEFAULT_SESSION="xfce"
