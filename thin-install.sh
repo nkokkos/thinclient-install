@@ -324,7 +324,7 @@ do_install() {
   preflight
   install_packages
   build_client "$LIBUDEV0"
-  build_client "$AUR_PKG" "AUR_PKG_REF"
+  build_client "$AUR_PKG" "$AUR_PKG_REF"
   configure_system
   configure_greek
   local client; client=$(detect_client)
