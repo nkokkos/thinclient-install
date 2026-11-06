@@ -34,7 +34,7 @@ SERVER_URL="vdi.yourcompany.com"
 PKG_SAVE_DIR="/root/packages"
 
 # fonts + dictionary = so documents and web pages look right, use falcon/epiphany web servers which are lightweight
-APPS=(ttf-liberation ttf-dejavu falcon epiphany)
+APPS=(ttf-liberation ttf-dejavu falkon epiphany)
 # Both XFCE and LXQt are installed. Which one starts by default? "xfce" or "lxqt".
 # The other one stays available in the session menu on the login screen.
 DEFAULT_SESSION="xfce"
