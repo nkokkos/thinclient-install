@@ -1,4 +1,4 @@
-This script configures a  ***Target: HP t610 (AMD GPU) thin client***  archinstall completed installation. 
+This script configures a  ***Target: HP t610 (AMD GPU) thin client*** archlinux installation
 
 First wipe all previous data:
 
@@ -34,7 +34,7 @@ Then download the file with curl:
 
 curl -O https://raw.githubusercontent.com/nkokkos/thinclient-install/main/thin-install.sh
 
-and run it
+and run it.
 
 It installs two window managers:
 
@@ -43,7 +43,7 @@ To switch between LXQt and XFCE,
 update the target desktop session string in 
 
 ```
-/etc/lightdm/lightdm.conf.d/10-thinclient.conf (setting user-session=lxqt or user-session=xfce) 
+/etc/lightdm/lightdm.conf.d/10-thinclient.conf (set user-session = lxqt or user-session = xfce) 
 ```
 
 and update
@@ -57,5 +57,5 @@ then delete the user's cached session file: (rm -f /home/thinuser/.dmrc)
 Restart the display manager using:
 
 ```
-***sudo systemctl restart lightdm***
+sudo systemctl restart lightdm
 ```
